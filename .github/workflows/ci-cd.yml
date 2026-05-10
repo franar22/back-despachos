@@ -48,8 +48,13 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           port: 22
-          command_timeout: 10m
+          command_timeout: 15m
           script: |
+            if ! command -v docker-compose &> /dev/null; then
+              sudo curl -sL "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" \
+                -o /usr/local/bin/docker-compose
+              sudo chmod +x /usr/local/bin/docker-compose
+            fi
             mkdir -p ~/deploy/back-despachos && cd ~/deploy/back-despachos
             cat > .env << ENVEOF
             DOCKERHUB_USERNAME=${{ secrets.DOCKERHUB_USERNAME }}
@@ -89,6 +94,7 @@ jobs:
                   DB_NAME: ${DB_NAME_DESPACHOS:-despachos_db}
                   DB_USERNAME: ${DB_USERNAME:-appuser}
                   DB_PASSWORD: ${DB_PASSWORD:-apppassword}
+                  SPRING_DATASOURCE_URL: jdbc:mysql://mysql-despachos:3306/${DB_NAME_DESPACHOS:-despachos_db}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
                 ports:
                   - "8081:8081"
                 depends_on:
@@ -112,6 +118,6 @@ jobs:
             COMPOSEEOF
             echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
             docker pull ${{ secrets.DOCKERHUB_USERNAME }}/back-despachos:latest
-            docker compose up -d --remove-orphans
-            sleep 10 && docker compose ps
+            docker-compose up -d --remove-orphans
+            sleep 10 && docker-compose ps
             docker image prune -f
