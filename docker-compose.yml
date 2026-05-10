@@ -1,0 +1,60 @@
+# Docker Compose independiente - Backend Despachos
+# Permite levantar solo este servicio + su base de datos
+# Uso: docker compose up -d
+services:
+  mysql-despachos:
+    image: mysql:8.0
+    container_name: mysql-despachos
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpassword}
+      MYSQL_DATABASE: ${DB_NAME_DESPACHOS:-despachos_db}
+      MYSQL_USER: ${DB_USERNAME:-appuser}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-apppassword}
+    ports:
+      - "3307:3306"
+    volumes:
+      - despachos_mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-rootpassword}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - despachos-net
+    restart: unless-stopped
+
+  back-despachos:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: back-despachos
+    environment:
+      DB_ENDPOINT: mysql-despachos
+      DB_PORT: 3306
+      DB_NAME: ${DB_NAME_DESPACHOS:-despachos_db}
+      DB_USERNAME: ${DB_USERNAME:-appuser}
+      DB_PASSWORD: ${DB_PASSWORD:-apppassword}
+    ports:
+      - "8081:8081"
+    depends_on:
+      mysql-despachos:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8081/actuator/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+    networks:
+      - despachos-net
+    restart: on-failure
+
+# Named volume: datos persisten entre reinicios de contenedor
+volumes:
+  despachos_mysql_data:
+    driver: local
+
+networks:
+  despachos-net:
+    driver: bridge

@@ -1,0 +1,117 @@
+name: CI/CD - Backend Despachos
+on:
+  push:
+    branches:
+      - deploy
+
+jobs:
+  build-and-push:
+    name: Build & Push imagen Docker
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout codigo
+        uses: actions/checkout@v4
+      - name: Configurar Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Login en Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Generar tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/back-despachos
+          tags: |
+            type=raw,value=latest
+            type=sha,prefix=sha-,format=short
+      - name: Build & Push imagen
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          dockerfile: Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: Deploy en EC2 Backend
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    steps:
+      - name: Deploy con docker compose
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST_BACKEND }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          port: 22
+          command_timeout: 10m
+          script: |
+            mkdir -p ~/deploy/back-despachos && cd ~/deploy/back-despachos
+            cat > .env << ENVEOF
+            DOCKERHUB_USERNAME=${{ secrets.DOCKERHUB_USERNAME }}
+            DB_NAME_DESPACHOS=${{ secrets.DB_NAME_DESPACHOS }}
+            DB_USERNAME=${{ secrets.DB_USERNAME }}
+            DB_PASSWORD=${{ secrets.DB_PASSWORD }}
+            MYSQL_ROOT_PASSWORD=rootpassword
+            IMAGE_TAG=latest
+            ENVEOF
+            cat > docker-compose.yml << 'COMPOSEEOF'
+            services:
+              mysql-despachos:
+                image: mysql:8.0
+                container_name: mysql-despachos
+                environment:
+                  MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpassword}
+                  MYSQL_DATABASE: ${DB_NAME_DESPACHOS:-despachos_db}
+                  MYSQL_USER: ${DB_USERNAME:-appuser}
+                  MYSQL_PASSWORD: ${DB_PASSWORD:-apppassword}
+                volumes:
+                  - despachos_mysql_data:/var/lib/mysql
+                healthcheck:
+                  test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-prootpassword"]
+                  interval: 10s
+                  timeout: 5s
+                  retries: 10
+                  start_period: 40s
+                networks:
+                  - backend-net
+                restart: unless-stopped
+              back-despachos:
+                image: ${DOCKERHUB_USERNAME:-tuusuario}/back-despachos:${IMAGE_TAG:-latest}
+                container_name: back-despachos
+                environment:
+                  DB_ENDPOINT: mysql-despachos
+                  DB_PORT: 3306
+                  DB_NAME: ${DB_NAME_DESPACHOS:-despachos_db}
+                  DB_USERNAME: ${DB_USERNAME:-appuser}
+                  DB_PASSWORD: ${DB_PASSWORD:-apppassword}
+                ports:
+                  - "8081:8081"
+                depends_on:
+                  mysql-despachos:
+                    condition: service_healthy
+                healthcheck:
+                  test: ["CMD-SHELL", "wget -qO- http://localhost:8081/actuator/health || exit 1"]
+                  interval: 30s
+                  timeout: 10s
+                  retries: 5
+                  start_period: 90s
+                networks:
+                  - backend-net
+                restart: on-failure
+            volumes:
+              despachos_mysql_data:
+                driver: local
+            networks:
+              backend-net:
+                driver: bridge
+            COMPOSEEOF
+            echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+            docker pull ${{ secrets.DOCKERHUB_USERNAME }}/back-despachos:latest
+            docker compose up -d --remove-orphans
+            sleep 10 && docker compose ps
+            docker image prune -f
